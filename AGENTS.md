@@ -4,7 +4,9 @@
 
 This lab studies Substrate browser actors, Playwright MCP, suspend/resume behavior, and capacity.
 
-`README.md` is the entry point. `.githooks/` contains Git hooks; `scripts/` contains setup helpers. Use `experiments/` for experiment code and `data/` for structured JSON/CSV outputs. Publish prose findings on `rovewyn.github.io`; do not generate or retain prose reports by default.
+`README.md` is the entry point. `.githooks/` contains Git hooks; `scripts/` contains reusable setup helpers; `experiments/` contains experiment scripts and their required image recipes, runtime configuration, dependency manifests, and lockfiles.
+
+This repository stores experiment code and operating instructions only. Keep all experiment results locally in ignored `outputs/` or `state/`. Never commit or push reports, measured results, JSON/CSV result datasets, screenshots, logs, traces, browser profiles, or snapshot artifacts, including redacted versions. Do not embed measured findings in README.md or PR content. Publishing results or an article requires a separate explicit user instruction.
 
 ## Lab Scope & Agent Restrictions
 
@@ -18,9 +20,9 @@ Install Gitleaks, then run `sh scripts/install-hooks.sh` after cloning. Document
 
 Use the introduced language's conventions and descriptive names such as `suspend-resume`. All documentation, comments, docstrings, commit messages, and PR titles and descriptions must be in English. Explain lifecycle assumptions and benchmark parameters.
 
-## Experiment Validation & Data
+## Experiment Execution & Local Results
 
-Validate through direct experiment runs and manual output inspection. Record parameters, environment, units, timing, failures, and resource measurements in structured data. State suspend/resume persistence expectations. Distinguish simulated observations from actual Substrate runs.
+Validate through direct experiment runs and manual output inspection. Record parameters, environment, units, timing, failures, and resource measurements in ignored local output files. State suspend/resume persistence expectations in the operating instructions. Distinguish simulated observations from actual Substrate runs in local records. Preserve existing local results when reorganizing or cleaning the checkout.
 
 ## Git Workflow & Cleanup
 
@@ -37,7 +39,7 @@ These checkout requirements apply to post-merge cleanup. Preserve uncommitted ch
 
 Commit messages and PR titles must follow Conventional Commits: `type(scope): description`; scope is optional. Example: `feat: add suspend-resume experiment`.
 
-Describe changes and observed results, link relevant issues, and provide reproduction commands. Include screenshots for browser-visible changes and disclose omitted validation.
+Describe code changes, link relevant issues, and provide experiment commands. Describe code validation and disclose omitted execution. Do not attach experiment reports, measured outcomes, screenshots, or result data to commits or PRs.
 
 ## Security & Configuration
 

@@ -1,0 +1,22 @@
+/bin/
+/cache/
+/src/
+/state/
+/outputs/
+# Experiment reports and results are local only.
+/data/
+/results/
+/reports/
+/artifacts/
+/logs/
+*.log
+*.har
+*.trace
+**/node_modules/
+**/__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+*.pem
+*.key

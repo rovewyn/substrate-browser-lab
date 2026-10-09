@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Substrate Browser Lab</title>
+<style>
+body{font:18px system-ui;margin:48px;background:#eef3f9;color:#172334}main{max-width:900px;margin:auto;background:white;padding:36px;border-radius:18px;box-shadow:0 8px 30px #15243818}h1{margin-top:0}button,input{font:inherit;padding:10px 16px;margin:8px 8px 8px 0}button{background:#245edb;color:white;border:0;border-radius:7px}input{border:1px solid #acb8ca;border-radius:7px}pre{background:#f4f7fb;padding:20px;white-space:pre-wrap;font:14px monospace}.badge{color:#245edb;font-weight:700}label{display:block;margin-top:18px}
+</style>
+<main>
+<div class="badge">SUBSTRATE / CHROMIUM / PLAYWRIGHT MCP</div>
+<h1>Browser snapshot lab</h1>
+<p>This page holds a random token and a counter in JavaScript memory.</p>
+<label for="note">Draft note</label><input id="note" placeholder="Type a note">
+<button id="save">Save note</button><button id="increment">Increment memory counter</button>
+<p id="result" role="status">Ready</p><pre id="state"></pre>
+</main>
+<script>
+window.lab = {token: crypto.randomUUID(), counter: 0, startedAt: Date.now(), volatileNote: ''};
+function render(){document.querySelector('#state').textContent=JSON.stringify({url:location.href,...lab,cookie:document.cookie,localStorageNote:localStorage.getItem('note'),sessionStorageNote:sessionStorage.getItem('note')},null,2)}
+document.querySelector('#save').onclick=()=>{lab.volatileNote=document.querySelector('#note').value;localStorage.setItem('note',lab.volatileNote);sessionStorage.setItem('note',lab.volatileNote);document.cookie='lab=browser-checkpoint; Path=/; SameSite=Lax';document.querySelector('#result').textContent='Note saved';render()};
+document.querySelector('#increment').onclick=()=>{lab.counter++;document.querySelector('#result').textContent='Memory counter: '+lab.counter;render()};
+render();
+</script>
+</html>

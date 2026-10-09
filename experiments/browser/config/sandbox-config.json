@@ -1,0 +1,29 @@
+{
+  "apiVersion": "ate.dev/v1alpha1",
+  "kind": "SandboxConfig",
+  "metadata": {
+    "name": "browser-gvisor-20261005",
+    "labels": {
+      "local.substrate-play.owner": "substrate-play"
+    }
+  },
+  "spec": {
+    "defaultVersion": "v1",
+    "sandboxClass": "gvisor",
+    "versions": [
+      {
+        "assets": {
+          "arm64": {
+            "gvisor": {
+              "url": "gs://gvisor/releases/release/20261005.0/aarch64/gvisor.tar.zstd",
+              "sha256": "f8bd7cb4e989db445255c20e6c2962498e5b5bd1ec1407bfcf187fbd5f184a2a"
+            }
+          }
+        },
+        "name": "v1",
+        "pauseImage": "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4",
+        "state": "Enabled"
+      }
+    ]
+  }
+}
