@@ -2,36 +2,45 @@
 
 ## Project Structure & Module Organization
 
-This lab studies Substrate browser actors, Playwright MCP integration, SuspendActor/ResumeActor behavior, and capacity benchmarks.
+This lab studies Substrate browser actors, Playwright MCP, suspend/resume behavior, and capacity.
 
-`README.md` is the entry point. `.githooks/` contains Git hooks; `scripts/` contains setup helpers. Use `experiments/` for experiment code and `data/` for useful structured outputs, such as JSON or CSV. Separate reusable helpers from individual experiments. Publish prose findings on `rovewyn.github.io`. Do not generate or retain prose reports here by default.
+`README.md` is the entry point. `.githooks/` contains Git hooks; `scripts/` contains setup helpers. Use `experiments/` for experiment code and `data/` for structured JSON/CSV outputs. Publish prose findings on `rovewyn.github.io`; do not generate or retain prose reports by default.
 
 ## Lab Scope & Agent Restrictions
 
-Agents must not add CI workflows, including GitHub Actions, or write test code, including temporary test scripts. Do not add test suites, test frameworks, test mocks, test-only fixtures, coverage infrastructure, or CI/test dependencies. Keep work focused on requested experiments, benchmarks, data collection, and analysis. The local Gitleaks commit check remains mandatory.
+Agents must not add CI workflows (including GitHub Actions), test code (including temporary scripts), test suites, test frameworks, mocks or fixtures for tests, coverage infrastructure, or CI/test dependencies. Focus on experiments, benchmarks, data collection, and analysis. Gitleaks commit checks remain mandatory.
 
 ## Setup & Experiment Commands
 
-Run `sh scripts/install-hooks.sh` after cloning to enable Gitleaks checks. Install Gitleaks first; see `README.md`.
-
-Document experiment setup, commands, configuration, and expected outputs in `README.md`. Commit dependency manifests and lockfiles.
+Install Gitleaks, then run `sh scripts/install-hooks.sh` after cloning. Document experiment commands, configuration, and expected outputs in `README.md`. Commit dependency manifests and lockfiles.
 
 ## Coding Style & Naming Conventions
 
-No formatter or linter is configured. Follow the conventions of the language introduced. Use descriptive names, such as `suspend-resume` or `browser-capacity`. All documentation, code comments, docstrings, commit messages, and pull request titles and descriptions must be written in English. Explain lifecycle assumptions and benchmark parameters.
+Use the introduced language's conventions and descriptive names such as `suspend-resume`. All documentation, comments, docstrings, commit messages, and PR titles and descriptions must be in English. Explain lifecycle assumptions and benchmark parameters.
 
 ## Experiment Validation & Data
 
-Validate work through direct experiment runs and manual output inspection. State which browser state must survive suspend/resume. Structured data should record parameters, environment, units, timing, failures, and resource measurements needed to interpret results. Distinguish simulated observations from actual Substrate runs.
+Validate through direct experiment runs and manual output inspection. Record parameters, environment, units, timing, failures, and resource measurements in structured data. State suspend/resume persistence expectations. Distinguish simulated observations from actual Substrate runs.
+
+## Git Workflow & Cleanup
+
+Use `codex/` feature branches during development. After merging a PR, cleanup must remove both its local and remote feature branches:
+
+1. Confirm neither branch contains new or unmerged work; delete the remote feature branch.
+2. Run `git fetch --prune origin`.
+3. Switch away from the local feature branch: primary clones may use `git switch main`, then `git merge --ff-only origin/main`; linked worktrees must use `git switch --detach origin/main`.
+4. Delete the local feature branch after switching away.
+
+These checkout requirements apply to post-merge cleanup. Preserve uncommitted changes and branches used by other worktrees.
 
 ## Commit & Pull Request Guidelines
 
-Commit messages and pull request titles must follow Conventional Commits: `type(scope): description`, with an optional scope. Example: `feat: add suspend-resume experiment`.
+Commit messages and PR titles must follow Conventional Commits: `type(scope): description`; scope is optional. Example: `feat: add suspend-resume experiment`.
 
-Describe changes, link relevant issues, and include experiment commands and observed results. Include screenshots for browser-visible changes. Document benchmark reproduction and any omitted validation.
+Describe changes and observed results, link relevant issues, and provide reproduction commands. Include screenshots for browser-visible changes and disclose omitted validation.
 
 ## Security & Configuration
 
-Never commit credentials, tokens, cookies, private browser profiles, or personal data. Use synthetic experiment data and placeholders such as `<REDACTED>` or `example.com`. Remove or redact sensitive data in logs, traces, screenshots, URLs, reports, and PR content before committing, sharing, or publishing. Document environment variable names without their values.
+Never commit credentials, tokens, cookies, private browser profiles, or personal data. Use synthetic data and placeholders such as `<REDACTED>` or `example.com`. Redact sensitive data in logs, traces, screenshots, URLs, reports, and PR content before committing, sharing, or publishing. Document environment variable names without values.
 
-Before every commit, `.githooks/pre-commit` runs `gitleaks git --pre-commit --staged --redact`. Commit only after a successful scan with no findings. Missing tools and scan errors block commits. Never bypass the hook with `--no-verify`. Restage and rescan after changes.
+The pre-commit hook must pass `gitleaks git --pre-commit --staged --redact` with no findings. Missing tools or scan errors block commits. Never use `--no-verify`. Restage and rescan after changes.
