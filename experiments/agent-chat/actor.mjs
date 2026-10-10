@@ -145,13 +145,13 @@ async function account() {
 async function thread() {
   if (loaded) return metadata.threadId;
   if (metadata.threadId) {
-    await rpc('thread/resume', { threadId: metadata.threadId, approvalPolicy: 'never', sandbox: 'readOnly' });
+    await rpc('thread/resume', { threadId: metadata.threadId, approvalPolicy: 'never', sandbox: 'read-only' });
   } else {
     const models = await rpc('model/list', {});
     const model = models.data.find(row => row.isDefault);
     if (!model) throw new HttpError(409, 'No default model is available');
     const result = await rpc('thread/start', {
-      model: model.model, cwd: state, approvalPolicy: 'never', sandbox: 'readOnly',
+      model: model.model, cwd: state, approvalPolicy: 'never', sandbox: 'read-only',
       baseInstructions: 'You are a conversational assistant. Reply in the user\'s language. This experiment is for text conversation only. Do not run commands, use tools, or modify files. Share concise progress updates when useful.',
     });
     metadata.threadId = result.thread.id;

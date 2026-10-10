@@ -74,8 +74,8 @@ function render(event) {
     notice(text, p.turn?.status === 'failed');
     entry(`turn-${event.seq}`, 'Status', 'system').text.textContent = text;
   } else if (['error', 'turn/rejected', 'turn/transportFailed'].includes(event.method)) {
-    busy = false;
-    const text = p.error?.message || 'Request failed';
+    if (event.method !== 'error') busy = false;
+    const text = p.error?.message || p.message || 'Request failed';
     notice(text, true); entry(`error-${event.seq}`, 'Error', 'system').text.textContent = text;
   } else if (event.method === 'auth/completed') {
     element('login-details').hidden = true;
@@ -108,6 +108,9 @@ async function loadConversation() {
     closeStream();
     const connection = new EventSource(`${path('events')}?after=${lastSeq}`);
     stream = connection;
+    connection.onopen = () => {
+      if (current === generation && stream === connection) notice(busy ? 'Agent is responding. Suspend remains available.' : 'Actor connected.');
+    };
     connection.onmessage = message => { if (current === generation) render(JSON.parse(message.data)); };
     connection.onerror = () => {
       connection.close();
@@ -139,7 +142,10 @@ async function select(name) {
   closeStream(); generation++; selected = name; lastSeq = 0; busy = false; authenticated = false;
   entries.clear(); element('history').replaceChildren(); element('message').value = '';
   element('name').textContent = name; element('login-details').hidden = true;
+  element('state').textContent = rows.find(row => row.name === name)?.state.replace('ACTOR_STATE_', '') || 'Reading Substrate state';
+  element('account-state').textContent = '';
   notice('History is read from the actor only while it is running.');
+  controls();
   await refreshActors();
   try { if (running()) await loadConversation(); } catch (error) { notice(error.message, true); }
 }
