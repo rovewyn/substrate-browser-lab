@@ -29,6 +29,16 @@ const channels = new Map();
 const forwards = new Map();
 const creating = new Set();
 const settingsCache = new Map();
+const upgrades = new Map();
+const readyRuntimes = new Set();
+const runtimeRevision = 'actor-tools-v1';
+const runtimeUpgrader = readFileSync(join(directory, 'upgrade-runtime.cjs'), 'utf8');
+const runtimeConfig = readFileSync(join(directory, 'image/config.toml'), 'utf8');
+const runtimeBundle = JSON.stringify({ revision: runtimeRevision, files: {
+  '/app/actor.mjs': readFileSync(join(directory, 'actor.mjs'), 'utf8'),
+  '/app/common.mjs': readFileSync(join(directory, 'common.mjs'), 'utf8'),
+  '/app/config.toml': runtimeConfig, '/state/codex/config.toml': runtimeConfig,
+} });
 const settingsReader = readFileSync(join(directory, 'inspect-settings.cjs'), 'utf8');
 const sandboxConfig = JSON.parse(readFileSync(join(directory, 'config/sandbox-config.json'), 'utf8'));
 const gvisorDigest = sandboxConfig.spec.versions.find(version => version.name === sandboxConfig.spec.defaultVersion).assets.arm64.gvisor.sha256;
@@ -174,6 +184,7 @@ function stopChannels(name) {
   for (const request of channels.get(name) || []) request.destroy();
 }
 async function modelSettings(name) {
+  if (upgrades.has(name)) throw new HttpError(409, 'Actor tools are being updated');
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
@@ -216,10 +227,11 @@ async function modelSettings(name) {
 }
 // Relay authentication only between explicitly enabled Actors; never expose the cache to the browser.
 async function actorJson(name, method, path, value) {
+  if (path.startsWith('/auth/') && upgrades.has(name)) throw new HttpError(409, 'Wait for the actor tool update');
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
-  if (actor.state !== 'ACTOR_STATE_RUNNING' || !permitted()) throw new HttpError(409, 'Both actors must be explicitly Resumed before copying sign-in');
+  if (actor.state !== 'ACTOR_STATE_RUNNING' || !permitted()) throw new HttpError(409, 'Explicitly Resume this actor before accessing its service');
   if (!actor.workerAssignment?.workerPodUid) throw new HttpError(503, 'Actor has no current worker');
   const connection = await workerForward(actor.workerAssignment);
   const credential = await refreshCredentials();
@@ -256,7 +268,66 @@ async function actorJson(name, method, path, value) {
     upstream.end(value === undefined ? undefined : JSON.stringify(value));
   });
 }
+async function ensureRuntime(name) {
+  const actor = await getActor(name);
+  const record = metadata[name];
+  const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
+  if (actor.state !== 'ACTOR_STATE_RUNNING' || !permitted()) throw new HttpError(409, 'Explicitly Resume this actor before updating its runtime');
+  if (readyRuntimes.has(actor.uid)) return;
+  if (upgrades.has(name)) return upgrades.get(name);
+  const upgrading = (async () => {
+    const health = await actorJson(name, 'GET', '/health');
+    if (health.runtimeRevision === runtimeRevision) { readyRuntimes.add(actor.uid); return; }
+    const status = await actorJson(name, 'GET', '/status');
+    if (status.busy) throw new HttpError(409, 'Wait for the current reply before enabling tools');
+    const worker = actor.workerAssignment;
+    if (!worker?.workerPodUid) throw new HttpError(503, 'Actor has no current worker');
+    const podUid = (await kube(['-n', worker.workerNamespace, 'get', 'pod', worker.workerPod, '-o', 'jsonpath={.metadata.uid}'])).trim();
+    const current = await getActor(name);
+    if (!permitted() || current.uid !== actor.uid || current.state !== 'ACTOR_STATE_RUNNING' ||
+        current.workerAssignment?.workerPodUid !== worker.workerPodUid || podUid !== worker.workerPodUid) {
+      throw new HttpError(409, 'Actor state or worker assignment changed');
+    }
+    stopChannels(name);
+    const abort = new AbortController();
+    const channel = { destroy: () => abort.abort() };
+    if (!channels.has(name)) channels.set(name, new Set());
+    channels.get(name).add(channel);
+    try {
+      const result = await new Promise((resolveUpgrade, reject) => {
+        const helper = spawn('kubectl', [...kubectl, '-n', worker.workerNamespace, 'exec', '-i', worker.workerPod,
+          '-c', 'ateom', '--', `/var/lib/ate/static-files/gvisor-${gvisorDigest}/runsc`,
+          `--root=/var/lib/ate/actors/${actor.uid}/runsc-state`, 'exec', 'agent', '/usr/local/bin/node', '-e', runtimeUpgrader],
+        { stdio: ['pipe', 'pipe', 'pipe'], signal: abort.signal });
+        let output = '';
+        const timer = setTimeout(() => helper.kill(), 30_000);
+        helper.stdout.on('data', chunk => { if (output.length < 4096) output += chunk; else helper.kill(); });
+        helper.stderr.on('data', () => {});
+        helper.stdin.on('error', () => {});
+        helper.on('error', reject);
+        helper.on('close', code => {
+          clearTimeout(timer);
+          try { if (code !== 0) throw new Error('Runtime upgrade stopped'); resolveUpgrade(JSON.parse(output)); }
+          catch (error) { reject(error); }
+        });
+        helper.stdin.end(runtimeBundle);
+      });
+      if (!permitted()) throw new HttpError(409, 'Actor is suspending');
+      if (result.busy) throw new HttpError(409, 'Wait for the current reply before enabling tools');
+      if (result.runtimeRevision !== runtimeRevision) throw new Error('Unexpected runtime revision');
+      readyRuntimes.add(actor.uid);
+      settingsCache.delete(actor.uid);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(503, 'Actor tool update stopped; no message was sent. Retry explicitly while running');
+    } finally { channels.get(name)?.delete(channel); }
+  })().finally(() => { if (upgrades.get(name) === upgrading) upgrades.delete(name); });
+  upgrades.set(name, upgrading);
+  return upgrading;
+}
 async function proxy(name, path, request, response) {
+  if (path === '/messages') await ensureRuntime(name);
+  else if (upgrades.has(name)) throw new HttpError(409, 'Actor tools are being updated; Suspend remains available');
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => record.enabled && !record.blocked && metadata[name] === record;
@@ -359,6 +430,7 @@ const server = createServer(async (request, response) => {
       record.blocked = true;
       record.operation = operation;
       settingsCache.delete(record.uid);
+      readyRuntimes.delete(record.uid);
       save();
       stopChannels(name);
       try {
@@ -382,6 +454,7 @@ const server = createServer(async (request, response) => {
         } else record.enabled = false;
         json(response, 200, { state: current.status?.state });
       } finally { delete record.operation; save(); actorCache = null; }
+      if (operation === 'resume' && record.enabled && !record.blocked) ensureRuntime(name).catch(() => {});
     } else {
       const allowedMethod = ['login', 'messages'].includes(operation) ? 'POST' : 'GET';
       if (request.method !== allowedMethod) throw new HttpError(405, `Use ${allowedMethod}`);

@@ -4,8 +4,8 @@ web_search = "disabled"
 model_reasoning_summary = "auto"
 
 [features]
-shell_tool = false
-unified_exec = false
+shell_tool = true
+unified_exec = true
 shell_snapshot = false
 multi_agent = false
 

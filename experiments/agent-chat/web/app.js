@@ -30,6 +30,7 @@ function controls() {
   element('message').placeholder = !running() ? 'Resume this actor to read history and send messages' : !authenticated ? 'Sign in with ChatGPT first' : busy ? 'Waiting for the current reply' : 'Message this agent';
   element('account').hidden = !running();
   element('model-settings').hidden = !running() || !authenticated;
+  element('tool-settings').hidden = !running();
   element('login').hidden = authenticated || !running();
   element('login').disabled = lifecycle;
   const previousSource = element('login-source').value;
@@ -48,7 +49,7 @@ function entry(key, label, kind) {
   const heading = document.createElement('strong'); heading.textContent = label;
   const text = document.createElement('pre');
   block.append(heading, text); element('history').append(block);
-  entries.set(key, { text, heading });
+  entries.set(key, { text, heading, command: '', output: '' });
   return entries.get(key);
 }
 function render(event) {
@@ -66,9 +67,25 @@ function render(event) {
       if (item.text) block.text.textContent = item.text;
     } else if (item?.type === 'reasoning') {
       (item.summary || []).forEach((text, index) => { entry(`${item.id}-summary-${index}`, 'Thinking summary', 'thinking').text.textContent = typeof text === 'string' ? text : text.text || ''; });
+    } else if (item?.type === 'commandExecution') {
+      const block = entry(item.id, 'Command', 'system');
+      block.command = item.command || block.command;
+      if (item.aggregatedOutput !== null && item.aggregatedOutput !== undefined) block.output = item.aggregatedOutput;
+      block.heading.textContent = `Command · ${item.status || 'running'}${item.exitCode === null || item.exitCode === undefined ? '' : ` · exit ${item.exitCode}`}`;
+      block.text.textContent = `${block.command}\n${block.output}`;
+    } else if (item?.type === 'fileChange') {
+      const block = entry(item.id, `Files · ${item.status || 'running'}`, 'system');
+      block.heading.textContent = `Files · ${item.status || 'completed'}`;
+      block.text.textContent = (item.changes || []).map(change => `${change.kind?.type || 'change'} ${change.path}\n${change.diff || ''}`).join('\n');
     } else if (item && !['userMessage', 'reasoning'].includes(item.type)) {
       entry(item.id, 'Process', 'system').text.textContent = `${item.type}: ${item.status || (event.method === 'item/completed' ? 'completed' : 'started')}`;
     }
+  } else if (event.method === 'item/commandExecution/outputDelta') {
+    const block = entry(p.itemId, 'Command · running', 'system');
+    block.output += p.delta;
+    block.text.textContent = `${block.command}\n${block.output}`;
+  } else if (event.method === 'item/fileChange/outputDelta') {
+    entry(p.itemId, 'Files', 'system').text.textContent += p.delta;
   } else if (event.method === 'turn/started') { busy = true; notice('Agent is responding. Suspend remains available.'); }
   else if (event.method === 'turn/completed') {
     busy = false;
@@ -96,6 +113,8 @@ async function refreshStatus() {
   authenticated = status.account?.type === 'chatgpt';
   busy = status.busy;
   element('account-state').textContent = authenticated ? `ChatGPT${status.account.planType ? ` · ${status.account.planType}` : ''}` : 'Not signed in';
+  element('tool-value').textContent = status.tools?.commands && status.tools?.files
+    ? `Commands and files · ${status.tools.workspace}` : 'Update pending · applies on the next message';
   if (authenticated && Date.now() - settingsReadAt >= 60_000) refreshSettings().catch(() => {});
   controls();
 }

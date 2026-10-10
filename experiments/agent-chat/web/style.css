@@ -24,6 +24,7 @@ select { border: 1px solid #cdd4de; border-radius: 7px; padding: 9px; font: inhe
 .account button { margin-left: 12px; }
 .model-settings { display: flex; flex-wrap: wrap; gap: 6px 20px; color: #697386; font-size: 13px; }
 .model-settings strong { color: #172033; font-weight: 500; }
+#tool-settings { margin-top: 8px; }
 #notice { color: #697386; min-height: 24px; margin: 14px 0; white-space: pre-wrap; }
 #notice.error { color: #ae3434; }
 #login-details { background: #edf4ff; padding: 14px; border-radius: 8px; margin: 14px 0; }

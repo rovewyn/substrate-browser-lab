@@ -11,7 +11,7 @@ const state = join(root, 'state/agent-chat');
 const target = ['--kubeconfig', join(playRoot, 'state/kubeconfig'), '--context', 'kind-substrate-play'];
 const binary = process.env.KUBECTL_ATE_BIN || join(playRoot, 'bin/kubectl-ate');
 const space = 'ate-demo-agent';
-const templateName = 'agent-chat-codex-0-162-1-v4';
+const templateName = 'agent-chat-codex-0-162-1-v5';
 const actorNames = ['chat-1', 'chat-2'];
 const execute = promisify(execFile);
 async function command(binaryName, args) {

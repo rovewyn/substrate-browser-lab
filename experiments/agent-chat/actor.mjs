@@ -7,8 +7,13 @@ import { atomicJson, body, fail, HttpError, json, noStore } from './common.mjs';
 
 const state = process.env.AGENT_STATE || '/state/chat';
 const codexHome = process.env.CODEX_HOME || '/state/codex';
+const workspace = '/state/workspace';
+const runtimeRevision = 'actor-tools-v1';
+const tools = { commands: true, files: true, webSearch: false, workspace };
+const baseInstructions = "You are an assistant running inside a Substrate gVisor actor. Reply in the user's language. You may execute commands and read or write files inside this actor. Use /state/workspace for user work. Keep service files, conversation records, and login credentials intact. Share concise progress updates and report actual tool results. Web search and additional MCP tools are not configured.";
 mkdirSync(state, { recursive: true, mode: 0o700 });
 mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+mkdirSync(workspace, { recursive: true, mode: 0o700 });
 mkdirSync(process.env.HOME || '/state/home', { recursive: true, mode: 0o700 });
 if (!existsSync(join(codexHome, 'config.toml'))) copyFileSync('/app/config.toml', join(codexHome, 'config.toml'));
 const metadataFile = join(state, 'session.json');
@@ -97,6 +102,7 @@ const recordedMethods = new Set([
   'item/agentMessage/delta', 'item/reasoning/summaryTextDelta',
   'item/reasoning/summaryPartAdded', 'item/plan/delta',
   'item/commandExecution/outputDelta', 'turn/plan/updated',
+  'item/fileChange/outputDelta',
   'thread/tokenUsage/updated', 'model/rerouted', 'error', 'warning',
 ]);
 function handleMessage(line) {
@@ -145,14 +151,14 @@ async function account() {
 async function thread() {
   if (loaded) return metadata.threadId;
   if (metadata.threadId) {
-    await rpc('thread/resume', { threadId: metadata.threadId, approvalPolicy: 'never', sandbox: 'read-only' });
+    await rpc('thread/resume', { threadId: metadata.threadId, cwd: workspace,
+      approvalPolicy: 'never', sandbox: 'danger-full-access', baseInstructions });
   } else {
     const models = await rpc('model/list', {});
     const model = models.data.find(row => row.isDefault);
     if (!model) throw new HttpError(409, 'No default model is available');
     const result = await rpc('thread/start', {
-      model: model.model, cwd: state, approvalPolicy: 'never', sandbox: 'read-only',
-      baseInstructions: 'You are a conversational assistant. Reply in the user\'s language. This experiment is for text conversation only. Do not run commands, use tools, or modify files. Share concise progress updates when useful.',
+      model: model.model, cwd: workspace, approvalPolicy: 'never', sandbox: 'danger-full-access', baseInstructions,
     });
     metadata.threadId = result.thread.id;
     metadata.model = model.model;
@@ -167,9 +173,9 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://actor');
   try {
     if (request.method === 'GET' && url.pathname === '/health') {
-      json(response, 200, { service: 'substrate-agent-chat', codexVersion: '0.162.1' });
+      json(response, 200, { service: 'substrate-agent-chat', codexVersion: '0.162.1', runtimeRevision, tools });
     } else if (request.method === 'GET' && url.pathname === '/status') {
-      json(response, 200, { account: await account(), busy: submitting || Boolean(activeTurn), model: metadata.model || null, lastSeq: sequence });
+      json(response, 200, { account: await account(), busy: submitting || Boolean(activeTurn), model: metadata.model || null, lastSeq: sequence, runtimeRevision, tools });
     } else if (request.method === 'POST' && url.pathname === '/login') {
       if (await account()) throw new HttpError(409, 'Already signed in');
       if (!login) login = await rpc('account/login/start', { type: 'chatgptDeviceCode' });
@@ -224,7 +230,9 @@ const server = createServer(async (request, response) => {
         if (signedIn?.type !== 'chatgpt') throw new HttpError(401, 'Sign in with ChatGPT first');
         const threadId = await thread();
         record('user/message', { text: input.text });
-        const result = await rpc('turn/start', { threadId, input: [{ type: 'text', text: input.text }], summary: 'auto' });
+        const result = await rpc('turn/start', { threadId, input: [{ type: 'text', text: input.text }],
+          cwd: workspace, approvalPolicy: 'never',
+          sandboxPolicy: { type: 'externalSandbox', networkAccess: 'enabled' }, summary: 'auto' });
         if (result.turn.status === 'inProgress' && completedTurn !== result.turn.id) activeTurn = result.turn.id;
         submitting = false;
         json(response, 202, { turnId: result.turn.id });
