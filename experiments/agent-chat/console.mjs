@@ -28,6 +28,11 @@ for (const record of Object.values(metadata)) {
 const channels = new Map();
 const forwards = new Map();
 const creating = new Set();
+const settingsCache = new Map();
+const settingsReader = readFileSync(join(directory, 'inspect-settings.cjs'), 'utf8');
+const sandboxConfig = JSON.parse(readFileSync(join(directory, 'config/sandbox-config.json'), 'utf8'));
+const gvisorDigest = sandboxConfig.spec.versions.find(version => version.name === sandboxConfig.spec.defaultVersion).assets.arm64.gvisor.sha256;
+if (!/^[a-f0-9]{64}$/.test(gvisorDigest)) throw new Error('Invalid configured gVisor asset digest');
 let credentials = null;
 let refreshing = null;
 let actorCache = null;
@@ -168,6 +173,47 @@ async function workerForward(assignment) {
 function stopChannels(name) {
   for (const request of channels.get(name) || []) request.destroy();
 }
+async function modelSettings(name) {
+  const actor = await getActor(name);
+  const record = metadata[name];
+  const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
+  if (actor.state !== 'ACTOR_STATE_RUNNING' || !permitted()) throw new HttpError(409, 'Explicitly Resume this actor before reading model settings');
+  const cached = settingsCache.get(actor.uid);
+  if (cached && Date.now() - cached.time < 60_000) return cached.result;
+  const entry = { time: Date.now() };
+  entry.result = (async () => {
+    const worker = actor.workerAssignment;
+    if (!worker?.workerPodUid) throw new HttpError(503, 'Actor has no current worker');
+    const podUid = (await kube(['-n', worker.workerNamespace, 'get', 'pod', worker.workerPod, '-o', 'jsonpath={.metadata.uid}'])).trim();
+    const current = await getActor(name);
+    if (!permitted() || current.state !== 'ACTOR_STATE_RUNNING' || current.uid !== actor.uid ||
+        current.workerAssignment?.workerPodUid !== worker.workerPodUid || podUid !== worker.workerPodUid) {
+      throw new HttpError(409, 'Actor state or worker assignment changed');
+    }
+    const abort = new AbortController();
+    const channel = { destroy: () => abort.abort() };
+    if (!channels.has(name)) channels.set(name, new Set());
+    channels.get(name).add(channel);
+    try {
+      // Read metadata inside the Actor; no credentials or conversation bodies leave it.
+      const { stdout } = await execute('kubectl', [...kubectl, '-n', worker.workerNamespace, 'exec', worker.workerPod,
+        '-c', 'ateom', '--', `/var/lib/ate/static-files/gvisor-${gvisorDigest}/runsc`,
+        `--root=/var/lib/ate/actors/${actor.uid}/runsc-state`, 'exec', 'agent', '/usr/local/bin/node', '-e', settingsReader],
+      { timeout: 20_000, maxBuffer: 16 * 1024, signal: abort.signal });
+      if (!permitted()) throw new HttpError(409, 'Actor is suspending');
+      const result = JSON.parse(stdout);
+      if (!['model', 'reasoningEffort', 'modelDefaultReasoningEffort'].every(key => result[key] === null || typeof result[key] === 'string')) {
+        throw new Error('Invalid model metadata');
+      }
+      return Object.fromEntries(['model', 'reasoningEffort', 'modelDefaultReasoningEffort'].map(key => [key, result[key]]));
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(503, 'Model settings could not be read from the actor');
+    } finally { channels.get(name)?.delete(channel); }
+  })().catch(error => { if (settingsCache.get(actor.uid) === entry) settingsCache.delete(actor.uid); throw error; });
+  settingsCache.set(actor.uid, entry);
+  return entry.result;
+}
 // Relay authentication only between explicitly enabled Actors; never expose the cache to the browser.
 async function actorJson(name, method, path, value) {
   const actor = await getActor(name);
@@ -291,10 +337,13 @@ const server = createServer(async (request, response) => {
       } finally { creating.delete(name); }
       return;
     }
-    const match = url.pathname.match(/^\/api\/actors\/([a-z0-9-]+)\/(resume|suspend|delete|login-copy|status|login|history|events|messages)$/);
+    const match = url.pathname.match(/^\/api\/actors\/([a-z0-9-]+)\/(resume|suspend|delete|login-copy|status|settings|login|history|events|messages)$/);
     if (!match) throw new HttpError(404, 'Not found');
     const [, name, operation] = match;
-    if (operation === 'login-copy') {
+    if (operation === 'settings') {
+      if (request.method !== 'GET') throw new HttpError(405, 'Use GET');
+      json(response, 200, await modelSettings(name));
+    } else if (operation === 'login-copy') {
       if (request.method !== 'POST') throw new HttpError(405, 'Use POST');
       const { source } = await body(request);
       if (typeof source !== 'string' || !/^[a-z0-9-]+$/.test(source) || source === name) throw new HttpError(400, 'Select another actor as the sign-in source');
@@ -309,6 +358,7 @@ const server = createServer(async (request, response) => {
       if (record.operation) throw new HttpError(409, 'A lifecycle operation is already in progress');
       record.blocked = true;
       record.operation = operation;
+      settingsCache.delete(record.uid);
       save();
       stopChannels(name);
       try {

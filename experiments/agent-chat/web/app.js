@@ -8,6 +8,7 @@ let authenticated = false;
 let lifecycle = false;
 let loading = false;
 let generation = 0;
+let settingsReadAt = 0;
 const entries = new Map();
 
 function notice(text, error = false) { element('notice').textContent = text; element('notice').classList.toggle('error', error); }
@@ -28,6 +29,7 @@ function controls() {
   element('send').disabled = element('message').disabled;
   element('message').placeholder = !running() ? 'Resume this actor to read history and send messages' : !authenticated ? 'Sign in with ChatGPT first' : busy ? 'Waiting for the current reply' : 'Message this agent';
   element('account').hidden = !running();
+  element('model-settings').hidden = !running() || !authenticated;
   element('login').hidden = authenticated || !running();
   element('login').disabled = lifecycle;
   const previousSource = element('login-source').value;
@@ -93,8 +95,24 @@ async function refreshStatus() {
   if (current !== generation) return;
   authenticated = status.account?.type === 'chatgpt';
   busy = status.busy;
-  element('account-state').textContent = authenticated ? `ChatGPT${status.account.planType ? ` · ${status.account.planType}` : ''}${status.model ? ` · ${status.model}` : ''}` : 'Not signed in';
+  element('account-state').textContent = authenticated ? `ChatGPT${status.account.planType ? ` · ${status.account.planType}` : ''}` : 'Not signed in';
+  if (authenticated && Date.now() - settingsReadAt >= 60_000) refreshSettings().catch(() => {});
   controls();
+}
+async function refreshSettings() {
+  if (!running() || !authenticated) return;
+  const current = generation;
+  settingsReadAt = Date.now();
+  try {
+    const settings = await api(path('settings'));
+    if (current !== generation || !running()) return;
+    element('model-value').textContent = settings.model || 'Unavailable';
+    element('effort-value').textContent = settings.reasoningEffort ?? 'Not set';
+    element('default-effort-value').textContent = settings.modelDefaultReasoningEffort ?? 'Unavailable';
+  } catch {
+    if (current !== generation || !running()) return;
+    for (const id of ['model-value', 'effort-value', 'default-effort-value']) element(id).textContent = 'Unavailable';
+  }
 }
 async function loadConversation() {
   if (!running() || loading) return;
@@ -139,11 +157,12 @@ async function refreshActors() {
 }
 async function select(name) {
   if (selected === name) return;
-  closeStream(); generation++; selected = name; lastSeq = 0; busy = false; authenticated = false;
+  closeStream(); generation++; selected = name; lastSeq = 0; busy = false; authenticated = false; settingsReadAt = 0;
   entries.clear(); element('history').replaceChildren(); element('message').value = '';
   element('name').textContent = name; element('login-details').hidden = true;
   element('state').textContent = rows.find(row => row.name === name)?.state.replace('ACTOR_STATE_', '') || 'Reading Substrate state';
   element('account-state').textContent = '';
+  for (const id of ['model-value', 'effort-value', 'default-effort-value']) element(id).textContent = 'Reading…';
   notice('History is read from the actor only while it is running.');
   controls();
   await refreshActors();
@@ -166,6 +185,7 @@ element('delete').onclick = async () => {
   const actor = rows.find(row => row.name === selected);
   if (!actor || !confirm(`Delete ${actor.name}? Its conversation history and sign-in state will be removed. This cannot be undone.`)) return;
   lifecycle = true; closeStream(); controls();
+  settingsReadAt = 0;
   notice('Deleting the actor.');
   try {
     await api(path('delete'), 'POST', { uid: actor.uid, confirmName: actor.name });
@@ -181,6 +201,7 @@ element('delete').onclick = async () => {
 };
 for (const operation of ['resume', 'suspend']) element(operation).onclick = async () => {
   lifecycle = true; closeStream(); controls();
+  settingsReadAt = 0;
   notice(operation === 'suspend' ? 'Suspend requested. Substrate is saving the actor.' : 'Resume requested. Waiting for Substrate.');
   try {
     await api(path(operation), 'POST', {});

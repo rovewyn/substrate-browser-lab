@@ -17,6 +17,11 @@
         <div class="controls"><button id="resume" disabled>Resume</button><button id="suspend" disabled>Suspend</button><button id="delete" class="danger" disabled>Delete</button></div>
       </div>
       <div id="account" class="account" hidden><span id="account-state"></span><button id="login" hidden>Sign in with ChatGPT</button></div>
+      <div id="model-settings" class="model-settings" hidden>
+        <span>Model: <strong id="model-value">Reading…</strong></span>
+        <span>Reasoning effort: <strong id="effort-value">Reading…</strong></span>
+        <span title="Suggested default from the account model catalog; separate from the conversation setting.">Catalog default: <strong id="default-effort-value">Reading…</strong></span>
+      </div>
       <form id="copy-login" hidden><select id="login-source" aria-label="Sign-in source actor"></select><button id="copy" type="submit">Reuse sign-in</button><span class="hint">Both actors must be running.</span></form>
       <div id="login-details" hidden></div>
       <div id="notice" role="status"></div>
