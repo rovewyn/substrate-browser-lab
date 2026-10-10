@@ -1,0 +1,13 @@
+cli_auth_credentials_store = "file"
+forced_login_method = "chatgpt"
+web_search = "disabled"
+model_reasoning_summary = "auto"
+
+[features]
+shell_tool = true
+unified_exec = true
+shell_snapshot = false
+multi_agent = false
+
+[analytics]
+enabled = false

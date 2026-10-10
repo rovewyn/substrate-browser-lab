@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Substrate Agent Chat</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header><strong>Substrate Agent Chat</strong><span>Local experiment</span></header>
+  <main>
+    <aside><h1>Actors</h1><div id="actors"></div><form id="create-form"><input id="actor-name" aria-label="New actor name" placeholder="chat-3" maxlength="63" pattern="[a-z][a-z0-9]*(?:-[a-z0-9]+)*" required><button id="create" type="submit">Create actor</button></form><p class="hint">New actors stay suspended.<br>Resume is always explicit.</p></aside>
+    <section class="conversation">
+      <div class="toolbar">
+        <div><h2 id="name">Select an actor</h2><div id="state" class="hint">Waiting for Substrate</div></div>
+        <div class="controls"><button id="resume" disabled>Resume</button><button id="suspend" disabled>Suspend</button><button id="delete" class="danger" disabled>Delete</button></div>
+      </div>
+      <div id="account" class="account" hidden><span id="account-state"></span><button id="login" hidden>Sign in with ChatGPT</button></div>
+      <div id="model-settings" class="model-settings" hidden>
+        <span>Model: <strong id="model-value">Reading…</strong></span>
+        <span>Reasoning effort: <strong id="effort-value">Reading…</strong></span>
+        <span title="Suggested default from the account model catalog; separate from the conversation setting.">Catalog default: <strong id="default-effort-value">Reading…</strong></span>
+      </div>
+      <form id="copy-login" hidden><select id="login-source" aria-label="Sign-in source actor"></select><button id="copy" type="submit">Reuse sign-in</button><span class="hint">Both actors must be running.</span></form>
+      <div id="tool-settings" class="hint" hidden>Tools: <span id="tool-value">Reading…</span></div>
+      <div id="login-details" hidden></div>
+      <div id="notice" role="status"></div>
+      <div id="history" aria-live="polite"></div>
+      <form id="composer"><textarea id="message" aria-label="Message" rows="3" maxlength="16000" placeholder="Resume an actor to start chatting" disabled></textarea><button id="send" disabled>Send</button></form>
+      <p class="privacy">Conversation content lives in the actor. This page keeps only its current display.</p>
+    </section>
+  </main>
+</body>
+</html>
