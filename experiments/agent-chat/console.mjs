@@ -30,7 +30,7 @@ const forwards = new Map();
 const creating = new Set();
 const upgrades = new Map();
 const readyRuntimes = new Set();
-const runtimeRevision = 'native-codex-v2.5';
+const runtimeRevision = 'native-codex-v2.7';
 const runtimeUpgrader = readFileSync(join(directory, 'upgrade-runtime.cjs'), 'utf8');
 const runtimeConfig = readFileSync(join(directory, 'image/config.toml'), 'utf8');
 const runtimeBundle = JSON.stringify({ revision: runtimeRevision, files: {
@@ -199,7 +199,7 @@ async function actorJson(name, method, path, value) {
       hostname: '127.0.0.1', port: connection.port, path, method, agent: false,
       cert: credential.cert, key: credential.key, ca: credential.ca, rejectUnauthorized: true,
       checkServerIdentity: (_hostname, certificate) => verifyWorker(connection, certificate),
-      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': String(record.port || 80), 'Content-Type': 'application/json' },
+      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': '80', 'Content-Type': 'application/json' },
     }, incoming => {
       const chunks = [];
       let length = 0;
@@ -274,8 +274,6 @@ async function ensureRuntime(name, allowBusy = false) {
       if (!permitted()) throw new HttpError(409, 'Actor is suspending');
       if (result.busy) throw new HttpError(409, 'Wait for the current reply before updating the runtime');
       if (result.runtimeRevision !== runtimeRevision) throw new Error('Unexpected runtime revision');
-      if (![80, 8080].includes(result.port)) throw new Error('Unexpected actor port');
-      record.port = result.port; save();
       readyRuntimes.add(actor.uid);
     } catch (error) {
       if (error instanceof HttpError) throw error;
@@ -303,7 +301,7 @@ async function proxy(name, path, request, response) {
       hostname: '127.0.0.1', port: connection.port, path, method: request.method, agent: false,
       cert: credential.cert, key: credential.key, ca: credential.ca, rejectUnauthorized: true,
       checkServerIdentity: (_hostname, certificate) => verifyWorker(connection, certificate),
-      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': String(record.port || 80), 'Content-Type': 'application/json', Accept: request.headers.accept || 'application/json' },
+      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': '80', 'Content-Type': 'application/json', Accept: request.headers.accept || 'application/json' },
     }, incoming => {
       noStore(response);
       response.writeHead(incoming.statusCode, { 'Content-Type': incoming.headers['content-type'] || 'application/json' });

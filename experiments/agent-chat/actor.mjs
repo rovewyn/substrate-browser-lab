@@ -8,7 +8,7 @@ import { atomicJson, body, fail, HttpError, json, noStore } from './common.mjs';
 const state = process.env.AGENT_STATE || '/state/chat';
 const codexHome = process.env.CODEX_HOME || '/state/codex';
 const workspace = '/state/workspace';
-const runtimeRevision = 'native-codex-v2.5';
+const runtimeRevision = 'native-codex-v2.7';
 const tools = { commands: true, files: true, webSearch: true, nativeProtocol: true, workspace };
 const developerInstructions = 'Run user work inside /state/workspace in this Substrate actor. Preserve /app service files, /state/chat records, and /state/codex credentials. Substrate suspend and resume are controlled outside this process.';
 const nativeMethods = new Set(JSON.parse(readFileSync('/app/protocol-methods.json')).methods);
@@ -23,11 +23,6 @@ const metadata = existsSync(metadataFile) ? JSON.parse(readFileSync(metadataFile
 const events = existsSync(journalFile)
   ? readFileSync(journalFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
 let sequence = events.at(-1)?.seq || 0;
-// Older journals did not carry a thread ID. Keep their ownership stable after selection.
-if (metadata.threadId && !metadata.legacyThreadId) {
-  metadata.legacyThreadId = metadata.threadId;
-  atomicJson(metadataFile, metadata);
-}
 let activeTurn = null;
 let submitting = false;
 const loadedThreads = new Set();
@@ -80,7 +75,7 @@ function startCodex() {
     pending.clear();
     serverRequests.clear();
     loadedThreads.clear();
-    if (activeTurn || submitting) record('turn/transportFailed', { turnId: activeTurn, error: { message: 'Codex process stopped' } });
+    if (activeTurn || submitting) record('turn/transportFailed', { threadId: activeThread, turnId: activeTurn, error: { message: 'Codex process stopped' } });
     activeTurn = null;
     submitting = false;
     for (const response of listeners) response.end();
@@ -160,7 +155,10 @@ function handleMessage(line) {
     finishedThreads.set(params.threadId, sequence + 1);
     if (activeThread === params.threadId) { activeTurn = null; activeThread = null; }
   }
-  if (message.method === 'serverRequest/resolved') serverRequests.delete(params.requestId);
+  if (message.method === 'serverRequest/resolved') {
+    params.threadId ||= serverRequests.get(params.requestId)?.params.threadId;
+    serverRequests.delete(params.requestId);
+  }
   record(message.method, params);
 }
 
@@ -176,7 +174,7 @@ async function account() {
 function threadEvents(threadId) {
   return events.filter(event => {
     const owner = event.params?.threadId || (event.method === 'server/request' ? event.params.params?.threadId : null);
-    return owner ? owner === threadId : !threadId || threadId === metadata.legacyThreadId || event.method.startsWith('auth/');
+    return owner ? owner === threadId : event.method.startsWith('auth/');
   });
 }
 function idle() {
@@ -232,7 +230,6 @@ async function nativeCall(method, params = {}) {
     if (method === 'thread/delete') {
       loadedThreads.delete(params.threadId);
       if (metadata.threadId === params.threadId) { delete metadata.threadId; delete metadata.model; delete metadata.effort; }
-      if (metadata.legacyThreadId === params.threadId) delete metadata.legacyThreadId;
       atomicJson(metadataFile, metadata);
     }
     return visibleParams(result);
@@ -309,10 +306,6 @@ const server = createServer(async (request, response) => {
     } else if (request.method === 'GET' && url.pathname === '/threads') {
       await initialized;
       const result = await rpc('thread/list', { limit: 100, cursor: url.searchParams.get('cursor') || undefined });
-      // Preserve access to older client origins excluded by native list defaults.
-      if (!url.searchParams.get('cursor') && metadata.legacyThreadId && !result.data.some(row => row.id === metadata.legacyThreadId)) {
-        result.data.push((await rpc('thread/read', { threadId: metadata.legacyThreadId, includeTurns: false })).thread);
-      }
       json(response, 200, { ...result, selected: metadata.threadId || null });
     } else if (request.method === 'POST' && url.pathname === '/threads') {
       idle();
@@ -334,9 +327,10 @@ const server = createServer(async (request, response) => {
       const input = await body(request);
       if (!serverRequests.has(input.id)) throw new HttpError(409, 'Native request is no longer pending');
       if ((input.result === undefined) === (input.error === undefined)) throw new HttpError(400, 'Provide one native result or error');
+      const threadId = serverRequests.get(input.id).params.threadId;
       send({ id: input.id, ...(input.error === undefined ? { result: input.result } : { error: input.error }) });
       serverRequests.delete(input.id);
-      record('serverRequest/resolved', { requestId: input.id });
+      record('serverRequest/resolved', { requestId: input.id, threadId });
       json(response, 200, { answered: true });
     } else if (request.method === 'POST' && url.pathname === '/rpc') {
       const input = await body(request);
@@ -392,5 +386,5 @@ const server = createServer(async (request, response) => {
   } catch (error) { fail(response, error); }
 });
 server.requestTimeout = 30_000;
-server.listen(Number(process.env.AGENT_PORT || 80), '0.0.0.0');
+server.listen(80, '0.0.0.0');
 process.on('SIGTERM', () => { child.kill('SIGTERM'); server.close(); setTimeout(() => process.exit(0), 500).unref(); });

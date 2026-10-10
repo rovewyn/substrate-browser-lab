@@ -19,7 +19,7 @@ const deployment = JSON.parse(readFileSync(file, 'utf8'));
 if (deployment.atespace !== 'ate-demo-agent') throw new Error('Unexpected deployment Atespace');
 const image = readFileSync(join(state, 'image.txt'), 'utf8').trim();
 if (!/^localhost:5001\/substrate-agent-chat@sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Build the owned image first');
-const name = 'agent-chat-codex-0-162-1-v11';
+const name = 'agent-chat-codex-0-162-1-v13';
 const existing = (await ate(['get', 'actor-templates', '-a', deployment.atespace])).actorTemplates || [];
 const current = existing.find(template => template.metadata.name === name);
 if (current && current.containers?.[0]?.image !== image) throw new Error('Template name already uses another image; preserve it');
@@ -32,7 +32,7 @@ if (!current) {
     snapshotConfig: { preferredFidelity: 'SNAPSHOT_FIDELITY_MEMORY', storageLocation: `gs://ate-snapshots/${deployment.atespace}/` },
     sandboxConfig: { sandboxClass: 'SANDBOX_CLASS_GVISOR', configName: 'agent-chat-gvisor-20261005' },
   };
-  const templateFile = join(state, 'actor-template-v11.json');
+  const templateFile = join(state, 'actor-template-v13.json');
   atomicJson(templateFile, template);
   await ate(['create', 'actor-template', '-f', templateFile]);
 }
