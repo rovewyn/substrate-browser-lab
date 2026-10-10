@@ -28,18 +28,18 @@ for (const record of Object.values(metadata)) {
 const channels = new Map();
 const forwards = new Map();
 const creating = new Set();
-const settingsCache = new Map();
 const upgrades = new Map();
 const readyRuntimes = new Set();
-const runtimeRevision = 'actor-tools-v1';
+const runtimeRevision = 'native-codex-v2.5';
 const runtimeUpgrader = readFileSync(join(directory, 'upgrade-runtime.cjs'), 'utf8');
 const runtimeConfig = readFileSync(join(directory, 'image/config.toml'), 'utf8');
 const runtimeBundle = JSON.stringify({ revision: runtimeRevision, files: {
+  '/app/launcher.mjs': readFileSync(join(directory, 'launcher.mjs'), 'utf8'),
   '/app/actor.mjs': readFileSync(join(directory, 'actor.mjs'), 'utf8'),
   '/app/common.mjs': readFileSync(join(directory, 'common.mjs'), 'utf8'),
-  '/app/config.toml': runtimeConfig, '/state/codex/config.toml': runtimeConfig,
+  '/app/config.toml': runtimeConfig,
+  '/app/protocol-methods.json': readFileSync(join(directory, 'protocol-methods.json'), 'utf8'),
 } });
-const settingsReader = readFileSync(join(directory, 'inspect-settings.cjs'), 'utf8');
 const sandboxConfig = JSON.parse(readFileSync(join(directory, 'config/sandbox-config.json'), 'utf8'));
 const gvisorDigest = sandboxConfig.spec.versions.find(version => version.name === sandboxConfig.spec.defaultVersion).assets.arm64.gvisor.sha256;
 if (!/^[a-f0-9]{64}$/.test(gvisorDigest)) throw new Error('Invalid configured gVisor asset digest');
@@ -183,51 +183,9 @@ async function workerForward(assignment) {
 function stopChannels(name) {
   for (const request of channels.get(name) || []) request.destroy();
 }
-async function modelSettings(name) {
-  if (upgrades.has(name)) throw new HttpError(409, 'Actor tools are being updated');
-  const actor = await getActor(name);
-  const record = metadata[name];
-  const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
-  if (actor.state !== 'ACTOR_STATE_RUNNING' || !permitted()) throw new HttpError(409, 'Explicitly Resume this actor before reading model settings');
-  const cached = settingsCache.get(actor.uid);
-  if (cached && Date.now() - cached.time < 60_000) return cached.result;
-  const entry = { time: Date.now() };
-  entry.result = (async () => {
-    const worker = actor.workerAssignment;
-    if (!worker?.workerPodUid) throw new HttpError(503, 'Actor has no current worker');
-    const podUid = (await kube(['-n', worker.workerNamespace, 'get', 'pod', worker.workerPod, '-o', 'jsonpath={.metadata.uid}'])).trim();
-    const current = await getActor(name);
-    if (!permitted() || current.state !== 'ACTOR_STATE_RUNNING' || current.uid !== actor.uid ||
-        current.workerAssignment?.workerPodUid !== worker.workerPodUid || podUid !== worker.workerPodUid) {
-      throw new HttpError(409, 'Actor state or worker assignment changed');
-    }
-    const abort = new AbortController();
-    const channel = { destroy: () => abort.abort() };
-    if (!channels.has(name)) channels.set(name, new Set());
-    channels.get(name).add(channel);
-    try {
-      // Read metadata inside the Actor; no credentials or conversation bodies leave it.
-      const { stdout } = await execute('kubectl', [...kubectl, '-n', worker.workerNamespace, 'exec', worker.workerPod,
-        '-c', 'ateom', '--', `/var/lib/ate/static-files/gvisor-${gvisorDigest}/runsc`,
-        `--root=/var/lib/ate/actors/${actor.uid}/runsc-state`, 'exec', 'agent', '/usr/local/bin/node', '-e', settingsReader],
-      { timeout: 20_000, maxBuffer: 16 * 1024, signal: abort.signal });
-      if (!permitted()) throw new HttpError(409, 'Actor is suspending');
-      const result = JSON.parse(stdout);
-      if (!['model', 'reasoningEffort', 'modelDefaultReasoningEffort'].every(key => result[key] === null || typeof result[key] === 'string')) {
-        throw new Error('Invalid model metadata');
-      }
-      return Object.fromEntries(['model', 'reasoningEffort', 'modelDefaultReasoningEffort'].map(key => [key, result[key]]));
-    } catch (error) {
-      if (error instanceof HttpError) throw error;
-      throw new HttpError(503, 'Model settings could not be read from the actor');
-    } finally { channels.get(name)?.delete(channel); }
-  })().catch(error => { if (settingsCache.get(actor.uid) === entry) settingsCache.delete(actor.uid); throw error; });
-  settingsCache.set(actor.uid, entry);
-  return entry.result;
-}
 // Relay authentication only between explicitly enabled Actors; never expose the cache to the browser.
 async function actorJson(name, method, path, value) {
-  if (path.startsWith('/auth/') && upgrades.has(name)) throw new HttpError(409, 'Wait for the actor tool update');
+  if (path.startsWith('/auth/') && upgrades.has(name)) throw new HttpError(409, 'Wait for the actor runtime update');
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
@@ -241,7 +199,7 @@ async function actorJson(name, method, path, value) {
       hostname: '127.0.0.1', port: connection.port, path, method, agent: false,
       cert: credential.cert, key: credential.key, ca: credential.ca, rejectUnauthorized: true,
       checkServerIdentity: (_hostname, certificate) => verifyWorker(connection, certificate),
-      headers: { 'ate-target-actor': `${space}/${name}`, 'Content-Type': 'application/json' },
+      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': String(record.port || 80), 'Content-Type': 'application/json' },
     }, incoming => {
       const chunks = [];
       let length = 0;
@@ -264,11 +222,11 @@ async function actorJson(name, method, path, value) {
     channels.get(name).add(upstream);
     upstream.on('close', () => channels.get(name)?.delete(upstream));
     upstream.on('error', () => reject(new HttpError(503, 'Sign-in transfer stopped; retry it explicitly')));
-    upstream.setTimeout(90_000, () => upstream.destroy());
+    upstream.setTimeout(path === '/health' ? 3000 : 90_000, () => upstream.destroy());
     upstream.end(value === undefined ? undefined : JSON.stringify(value));
   });
 }
-async function ensureRuntime(name) {
+async function ensureRuntime(name, allowBusy = false) {
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => metadata[name] === record && record.enabled && !record.blocked;
@@ -276,10 +234,11 @@ async function ensureRuntime(name) {
   if (readyRuntimes.has(actor.uid)) return;
   if (upgrades.has(name)) return upgrades.get(name);
   const upgrading = (async () => {
-    const health = await actorJson(name, 'GET', '/health');
-    if (health.runtimeRevision === runtimeRevision) { readyRuntimes.add(actor.uid); return; }
-    const status = await actorJson(name, 'GET', '/status');
-    if (status.busy) throw new HttpError(409, 'Wait for the current reply before enabling tools');
+    const health = await actorJson(name, 'GET', '/health').catch(() => null);
+    if (health?.runtimeRevision === runtimeRevision) { readyRuntimes.add(actor.uid); return; }
+    const status = health ? await actorJson(name, 'GET', '/status') : null;
+    if (allowBusy && (status?.busy || status?.pendingRequests)) return;
+    if (status?.pendingRequests) throw new HttpError(409, 'Wait for the current reply before updating the runtime');
     const worker = actor.workerAssignment;
     if (!worker?.workerPodUid) throw new HttpError(503, 'Actor has no current worker');
     const podUid = (await kube(['-n', worker.workerNamespace, 'get', 'pod', worker.workerPod, '-o', 'jsonpath={.metadata.uid}'])).trim();
@@ -313,21 +272,22 @@ async function ensureRuntime(name) {
         helper.stdin.end(runtimeBundle);
       });
       if (!permitted()) throw new HttpError(409, 'Actor is suspending');
-      if (result.busy) throw new HttpError(409, 'Wait for the current reply before enabling tools');
+      if (result.busy) throw new HttpError(409, 'Wait for the current reply before updating the runtime');
       if (result.runtimeRevision !== runtimeRevision) throw new Error('Unexpected runtime revision');
+      if (![80, 8080].includes(result.port)) throw new Error('Unexpected actor port');
+      record.port = result.port; save();
       readyRuntimes.add(actor.uid);
-      settingsCache.delete(actor.uid);
     } catch (error) {
       if (error instanceof HttpError) throw error;
-      throw new HttpError(503, 'Actor tool update stopped; no message was sent. Retry explicitly while running');
+      throw new HttpError(503, 'Actor runtime update stopped; no message was sent. Retry explicitly while running');
     } finally { channels.get(name)?.delete(channel); }
   })().finally(() => { if (upgrades.get(name) === upgrading) upgrades.delete(name); });
   upgrades.set(name, upgrading);
   return upgrading;
 }
 async function proxy(name, path, request, response) {
-  if (path === '/messages') await ensureRuntime(name);
-  else if (upgrades.has(name)) throw new HttpError(409, 'Actor tools are being updated; Suspend remains available');
+  if (!path.startsWith('/events')) await ensureRuntime(name, path !== '/messages');
+  else if (upgrades.has(name)) throw new HttpError(409, 'Actor runtime is being updated; Suspend remains available');
   const actor = await getActor(name);
   const record = metadata[name];
   const permitted = () => record.enabled && !record.blocked && metadata[name] === record;
@@ -343,7 +303,7 @@ async function proxy(name, path, request, response) {
       hostname: '127.0.0.1', port: connection.port, path, method: request.method, agent: false,
       cert: credential.cert, key: credential.key, ca: credential.ca, rejectUnauthorized: true,
       checkServerIdentity: (_hostname, certificate) => verifyWorker(connection, certificate),
-      headers: { 'ate-target-actor': `${space}/${name}`, 'Content-Type': 'application/json', Accept: request.headers.accept || 'application/json' },
+      headers: { 'ate-target-actor': `${space}/${name}`, 'X-Ate-Target-Port': String(record.port || 80), 'Content-Type': 'application/json', Accept: request.headers.accept || 'application/json' },
     }, incoming => {
       noStore(response);
       response.writeHead(incoming.statusCode, { 'Content-Type': incoming.headers['content-type'] || 'application/json' });
@@ -357,7 +317,7 @@ async function proxy(name, path, request, response) {
     upstream.on('close', cleanup);
     upstream.on('error', () => { fail(response, new HttpError(503, 'Actor connection closed; no message was automatically resent')); cleanup(); });
     response.on('close', () => upstream.destroy());
-    if (path !== '/events' && !path.startsWith('/events?')) upstream.setTimeout(90_000, () => upstream.destroy());
+    if (path !== '/rpc' && path !== '/events' && !path.startsWith('/events?')) upstream.setTimeout(90_000, () => upstream.destroy());
     upstream.end(input === null ? undefined : JSON.stringify(input));
   });
 }
@@ -408,12 +368,25 @@ const server = createServer(async (request, response) => {
       } finally { creating.delete(name); }
       return;
     }
-    const match = url.pathname.match(/^\/api\/actors\/([a-z0-9-]+)\/(resume|suspend|delete|login-copy|status|settings|login|history|events|messages)$/);
+    const match = url.pathname.match(/^\/api\/actors\/([a-z0-9-]+)\/(resume|suspend|delete|login-copy|status|settings|threads|requests|rpc|protocol|network|login|history|events|messages)$/);
     if (!match) throw new HttpError(404, 'Not found');
     const [, name, operation] = match;
-    if (operation === 'settings') {
-      if (request.method !== 'GET') throw new HttpError(405, 'Use GET');
-      json(response, 200, await modelSettings(name));
+    if (operation === 'network') {
+      if (!['GET', 'POST'].includes(request.method)) throw new HttpError(405, 'Use GET or POST');
+      const actor = await getActor(name);
+      if (actor.uid !== metadata[name]?.uid) throw new HttpError(409, 'Actor identity changed');
+      const policy = await ate(['get', 'egress-policy', name, '-a', space]);
+      if (request.method === 'GET') json(response, 200, { hosts: policy.rules.flatMap(rule => rule.tlsPassthrough?.hostnames || []) });
+      else {
+        const input = await body(request);
+        if (!Array.isArray(input.hosts) || input.hosts.length > 40 || !input.hosts.every(host => typeof host === 'string' && host.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host))) throw new HttpError(400, 'Enter exact DNS hostnames without protocols, ports, or wildcards');
+        // Preserve non-TLS rules and the required subscription destinations.
+        const hosts = [...new Set(['chatgpt.com', 'auth.openai.com', 'api.openai.com', ...input.hosts])];
+        policy.rules = [...policy.rules.filter(rule => !rule.tlsPassthrough), { tlsPassthrough: { hostnames: hosts, ports: { numbers: [443] } } }];
+        const file = join(state, `${name}-egress.json`); atomicJson(file, policy);
+        await ate(['update', 'egress-policy', name, '-a', space, '-f', file]);
+        json(response, 200, { hosts });
+      }
     } else if (operation === 'login-copy') {
       if (request.method !== 'POST') throw new HttpError(405, 'Use POST');
       const { source } = await body(request);
@@ -429,7 +402,6 @@ const server = createServer(async (request, response) => {
       if (record.operation) throw new HttpError(409, 'A lifecycle operation is already in progress');
       record.blocked = true;
       record.operation = operation;
-      settingsCache.delete(record.uid);
       readyRuntimes.delete(record.uid);
       save();
       stopChannels(name);
@@ -456,8 +428,8 @@ const server = createServer(async (request, response) => {
       } finally { delete record.operation; save(); actorCache = null; }
       if (operation === 'resume' && record.enabled && !record.blocked) ensureRuntime(name).catch(() => {});
     } else {
-      const allowedMethod = ['login', 'messages'].includes(operation) ? 'POST' : 'GET';
-      if (request.method !== allowedMethod) throw new HttpError(405, `Use ${allowedMethod}`);
+      const allowedMethods = ['settings', 'threads', 'requests'].includes(operation) ? ['GET', 'POST'] : ['login', 'messages', 'rpc'].includes(operation) ? ['POST'] : ['GET'];
+      if (!allowedMethods.includes(request.method)) throw new HttpError(405, 'Unsupported method');
       await proxy(name, `/${operation}${url.search}`, request, response);
     }
   } catch (error) { fail(response, error); }

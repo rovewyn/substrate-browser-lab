@@ -8,9 +8,10 @@ import { atomicJson, body, fail, HttpError, json, noStore } from './common.mjs';
 const state = process.env.AGENT_STATE || '/state/chat';
 const codexHome = process.env.CODEX_HOME || '/state/codex';
 const workspace = '/state/workspace';
-const runtimeRevision = 'actor-tools-v1';
-const tools = { commands: true, files: true, webSearch: false, workspace };
-const baseInstructions = "You are an assistant running inside a Substrate gVisor actor. Reply in the user's language. You may execute commands and read or write files inside this actor. Use /state/workspace for user work. Keep service files, conversation records, and login credentials intact. Share concise progress updates and report actual tool results. Web search and additional MCP tools are not configured.";
+const runtimeRevision = 'native-codex-v2.5';
+const tools = { commands: true, files: true, webSearch: true, nativeProtocol: true, workspace };
+const developerInstructions = 'Run user work inside /state/workspace in this Substrate actor. Preserve /app service files, /state/chat records, and /state/codex credentials. Substrate suspend and resume are controlled outside this process.';
+const nativeMethods = new Set(JSON.parse(readFileSync('/app/protocol-methods.json')).methods);
 mkdirSync(state, { recursive: true, mode: 0o700 });
 mkdirSync(codexHome, { recursive: true, mode: 0o700 });
 mkdirSync(workspace, { recursive: true, mode: 0o700 });
@@ -22,12 +23,20 @@ const metadata = existsSync(metadataFile) ? JSON.parse(readFileSync(metadataFile
 const events = existsSync(journalFile)
   ? readFileSync(journalFile, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
 let sequence = events.at(-1)?.seq || 0;
+// Older journals did not carry a thread ID. Keep their ownership stable after selection.
+if (metadata.threadId && !metadata.legacyThreadId) {
+  metadata.legacyThreadId = metadata.threadId;
+  atomicJson(metadataFile, metadata);
+}
 let activeTurn = null;
 let submitting = false;
-let loaded = false;
+const loadedThreads = new Set();
+const serverRequests = new Map();
+let activeThread = null;
 let login = null;
 let importing = false;
 let completedTurn = null;
+const finishedThreads = new Map();
 let child;
 let initialized;
 const listeners = new Set();
@@ -69,6 +78,8 @@ function startCodex() {
   child.on('exit', () => {
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Codex stopped')); }
     pending.clear();
+    serverRequests.clear();
+    loadedThreads.clear();
     if (activeTurn || submitting) record('turn/transportFailed', { turnId: activeTurn, error: { message: 'Codex process stopped' } });
     activeTurn = null;
     submitting = false;
@@ -77,7 +88,7 @@ function startCodex() {
   });
   createInterface({ input: child.stdout }).on('line', handleMessage);
   initialized = rpc('initialize', {
-    clientInfo: { name: 'substrate_agent_chat', title: 'Substrate Agent Chat', version: '1.0.0' },
+    clientInfo: { name: 'substrate_agent_chat', title: 'Substrate Agent Chat', version: '2.0.0' }, capabilities: { experimentalApi: true },
   }).then(() => send({ method: 'initialized' }));
   initialized.catch(() => {});
 }
@@ -90,21 +101,26 @@ function send(message) {
 function rpc(method, params = {}, timeout = 60_000) {
   return new Promise((resolve, reject) => {
     const id = nextId++;
-    const timer = setTimeout(() => { pending.delete(id); reject(new HttpError(504, 'Codex request timed out')); }, timeout);
+    const timer = timeout > 0 ? setTimeout(() => { pending.delete(id); reject(new HttpError(504, 'Codex request timed out')); }, timeout) : null;
     pending.set(id, { resolve, reject, timer });
     try { send({ id, method, params }); }
     catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
   });
 }
 
-const recordedMethods = new Set([
-  'turn/started', 'turn/completed', 'item/started', 'item/completed',
-  'item/agentMessage/delta', 'item/reasoning/summaryTextDelta',
-  'item/reasoning/summaryPartAdded', 'item/plan/delta',
-  'item/commandExecution/outputDelta', 'turn/plan/updated',
-  'item/fileChange/outputDelta',
-  'thread/tokenUsage/updated', 'model/rerouted', 'error', 'warning',
-]);
+function visibleParams(value) {
+  const params = structuredClone(value || {});
+  function clean(item) {
+    if (!item || typeof item !== 'object') return;
+    if (item.type === 'reasoning') delete item.content;
+    for (const [key, child] of Object.entries(item)) {
+      if (key === 'error' && child) item[key] = publicError(typeof child === 'string' ? { message: child } : child);
+      else if (child && typeof child === 'object') clean(child);
+    }
+  }
+  clean(params);
+  return params;
+}
 function handleMessage(line) {
   let message;
   try { message = JSON.parse(line); } catch { return; }
@@ -118,9 +134,10 @@ function handleMessage(line) {
     return;
   }
   if (message.id !== undefined) {
-    if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
-      send({ id: message.id, result: { decision: 'decline' } });
-    } else send({ id: message.id, error: { code: -32601, message: 'Interactive tools are not enabled' } });
+    // Native requests remain pending until an explicit client response. Suspend does
+    // not resolve or cancel them; the whole process belongs to the actor snapshot.
+    serverRequests.set(message.id, { id: message.id, method: message.method, params: visibleParams(message.params) });
+    record('server/request', serverRequests.get(message.id));
     return;
   }
   if (message.method === 'account/login/completed') {
@@ -128,14 +145,22 @@ function handleMessage(line) {
     record('auth/completed', { success: message.params.success, error: message.params.error ? publicError({ message: message.params.error }) : null });
     return;
   }
-  if (!recordedMethods.has(message.method)) return;
-  const params = structuredClone(message.params || {});
-  if (message.method === 'turn/started') activeTurn = params.turn?.id;
-  if (message.method === 'turn/completed') { completedTurn = params.turn?.id; activeTurn = null; submitting = false; }
-  // Display summaries only; do not duplicate model reasoning blocks.
-  if (params.item?.type === 'reasoning') delete params.item.content;
-  if (params.turn?.error) params.turn.error = publicError(params.turn.error);
-  if (params.error) params.error = publicError(params.error);
+  // Raw reasoning is not an exposed summary. Keep all other native process events.
+  if (message.method?.startsWith('item/reasoning/') && !message.method.includes('summary')) return;
+  if (message.method?.startsWith('account/')) return;
+  const params = visibleParams(message.params);
+  if (message.method === 'turn/started' && (!activeThread || activeThread === params.threadId)) { activeTurn = params.turn?.id; activeThread = params.threadId; }
+  if (message.method === 'turn/completed') {
+    completedTurn = params.turn?.id;
+    finishedThreads.set(params.threadId, sequence + 1);
+    if (activeThread === params.threadId) { activeTurn = null; activeThread = null; submitting = false; }
+    for (const [id, request] of serverRequests) if (request.params.turnId === completedTurn) serverRequests.delete(id);
+  }
+  if (message.method === 'thread/status/changed' && params.status?.type === 'idle') {
+    finishedThreads.set(params.threadId, sequence + 1);
+    if (activeThread === params.threadId) { activeTurn = null; activeThread = null; }
+  }
+  if (message.method === 'serverRequest/resolved') serverRequests.delete(params.requestId);
   record(message.method, params);
 }
 
@@ -148,24 +173,70 @@ async function account() {
   return result.account ? { type: result.account.type, planType: result.account.planType } : null;
 }
 
+function threadEvents(threadId) {
+  return events.filter(event => {
+    const owner = event.params?.threadId || (event.method === 'server/request' ? event.params.params?.threadId : null);
+    return owner ? owner === threadId : !threadId || threadId === metadata.legacyThreadId || event.method.startsWith('auth/');
+  });
+}
+function idle() {
+  if (submitting || activeTurn || serverRequests.size) throw new HttpError(409, 'Wait for the active turn and pending requests');
+}
+function selectThread(result) {
+  metadata.threadId = result.thread.id;
+  metadata.model = result.model || metadata.model;
+  atomicJson(metadataFile, metadata);
+  loadedThreads.add(result.thread.id);
+  return result.thread.id;
+}
 async function thread() {
-  if (loaded) return metadata.threadId;
-  if (metadata.threadId) {
-    await rpc('thread/resume', { threadId: metadata.threadId, cwd: workspace,
-      approvalPolicy: 'never', sandbox: 'danger-full-access', baseInstructions });
-  } else {
-    const models = await rpc('model/list', {});
-    const model = models.data.find(row => row.isDefault);
-    if (!model) throw new HttpError(409, 'No default model is available');
-    const result = await rpc('thread/start', {
-      model: model.model, cwd: workspace, approvalPolicy: 'never', sandbox: 'danger-full-access', baseInstructions,
-    });
-    metadata.threadId = result.thread.id;
-    metadata.model = model.model;
-    atomicJson(metadataFile, metadata);
+  if (!metadata.threadId) {
+    const result = await rpc('thread/start', { model: metadata.model || undefined,
+      ...(metadata.effort ? { config: { model_reasoning_effort: metadata.effort } } : {}), cwd: workspace, approvalPolicy: 'on-request',
+      sandbox: 'danger-full-access', developerInstructions });
+    selectThread(result);
+  } else if (!loadedThreads.has(metadata.threadId)) {
+    const result = await rpc('thread/resume', { threadId: metadata.threadId, cwd: workspace,
+      model: metadata.model || undefined, approvalPolicy: 'on-request', sandbox: 'danger-full-access', developerInstructions });
+    selectThread(result);
   }
-  loaded = true;
   return metadata.threadId;
+}
+async function nativeCall(method, params = {}) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) throw new HttpError(400, 'Native parameters must be a JSON object');
+  if (!nativeMethods.has(method) || method === 'initialize') throw new HttpError(400, 'Unknown native method');
+  // Subscription credentials stay actor-local and use the existing device-code flow.
+  if ((method.startsWith('account/') && !['account/read', 'account/rateLimits/read'].includes(method)) || method === 'attestation/generate') throw new HttpError(400, 'Use the actor sign-in controls');
+  if (['thread/start', 'thread/resume', 'thread/fork', 'turn/start', 'review/start'].includes(method)) idle();
+  const turnOperation = ['turn/start', 'review/start'].includes(method);
+  const sessionOperation = ['thread/start', 'thread/resume', 'thread/fork'].includes(method);
+  if (turnOperation || sessionOperation) submitting = true;
+  const startedAt = sequence;
+  const forkHistory = method === 'thread/fork' ? threadEvents(params.threadId) : null;
+  try {
+    await initialized;
+    if (turnOperation && (await account())?.type !== 'chatgpt') throw new HttpError(401, 'Sign in with ChatGPT first');
+    if (method === 'turn/start' || method === 'turn/steer') {
+      record('user/message', { threadId: params.threadId,
+        text: (params.input || []).filter(item => item.type === 'text').map(item => item.text).join('\n') });
+    }
+    if (turnOperation) activeThread = params.threadId;
+    const result = await rpc(method, method === 'thread/fork' ? { excludeTurns: true, ...params } : params, 0);
+    if (sessionOperation) selectThread(result);
+    if (method === 'thread/fork') {
+      record('thread/journal', { threadId: result.thread.id, events: forkHistory.filter(event => !event.method.startsWith('server')) });
+    }
+    if (turnOperation && result.turn?.status === 'inProgress' && (finishedThreads.get(result.reviewThreadId || params.threadId) || 0) <= startedAt) {
+      activeTurn = result.turn.id; activeThread = result.reviewThreadId || params.threadId;
+    }
+    if (method === 'thread/delete') {
+      loadedThreads.delete(params.threadId);
+      if (metadata.threadId === params.threadId) { delete metadata.threadId; delete metadata.model; delete metadata.effort; }
+      if (metadata.legacyThreadId === params.threadId) delete metadata.legacyThreadId;
+      atomicJson(metadataFile, metadata);
+    }
+    return visibleParams(result);
+  } finally { if (turnOperation || sessionOperation) submitting = false; if (turnOperation && !activeTurn) activeThread = null; }
 }
 
 const server = createServer(async (request, response) => {
@@ -175,7 +246,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/health') {
       json(response, 200, { service: 'substrate-agent-chat', codexVersion: '0.162.1', runtimeRevision, tools });
     } else if (request.method === 'GET' && url.pathname === '/status') {
-      json(response, 200, { account: await account(), busy: submitting || Boolean(activeTurn), model: metadata.model || null, lastSeq: sequence, runtimeRevision, tools });
+      json(response, 200, { account: await account(), busy: submitting || Boolean(activeTurn), model: metadata.model || null, threadId: metadata.threadId || null, activeTurn, activeThread, pendingRequests: serverRequests.size, lastSeq: sequence, runtimeRevision, tools });
     } else if (request.method === 'POST' && url.pathname === '/login') {
       if (await account()) throw new HttpError(409, 'Already signed in');
       if (!login) login = await rpc('account/login/start', { type: 'chatgptDeviceCode' });
@@ -202,7 +273,7 @@ const server = createServer(async (request, response) => {
         child.kill('SIGTERM');
         await stopped;
         atomicJson(join(codexHome, 'auth.json'), auth);
-        loaded = false;
+        loadedThreads.clear();
         startCodex();
         await initialized;
         const result = await rpc('account/read', { refreshToken: false });
@@ -210,8 +281,80 @@ const server = createServer(async (request, response) => {
         record('auth/completed', { success: true, error: null });
         json(response, 200, { imported: true });
       } finally { importing = false; }
+    } else if (request.method === 'GET' && url.pathname === '/settings') {
+      await initialized;
+      const models = await rpc('model/list', {});
+      let model = metadata.model || models.data.find(row => row.isDefault)?.model;
+      let reasoningEffort = metadata.effort ?? null;
+      if (metadata.threadId) {
+        const read = await rpc('thread/read', { threadId: metadata.threadId, includeTurns: false });
+        model = read.thread.model || model;
+        reasoningEffort = metadata.effort ?? read.thread.reasoningEffort ?? null;
+      }
+      json(response, 200, { models: models.data, model, reasoningEffort,
+        modelDefaultReasoningEffort: models.data.find(row => row.model === model)?.defaultReasoningEffort ?? null });
+    } else if (request.method === 'POST' && url.pathname === '/settings') {
+      idle();
+      const input = await body(request);
+      const models = (await rpc('model/list', {})).data;
+      const model = models.find(row => row.model === input.model);
+      if (!model || (input.effort !== null && !model.supportedReasoningEfforts.some(row => row.reasoningEffort === input.effort))) throw new HttpError(400, 'Select an available model and effort');
+      if (metadata.threadId) {
+        selectThread(await rpc('thread/resume', { threadId: metadata.threadId, model: input.model,
+          config: { model_reasoning_effort: input.effort ?? model.defaultReasoningEffort } }));
+      }
+      metadata.model = input.model; metadata.effort = input.effort;
+      atomicJson(metadataFile, metadata);
+      json(response, 200, { updated: true });
+    } else if (request.method === 'GET' && url.pathname === '/threads') {
+      await initialized;
+      const result = await rpc('thread/list', { limit: 100, cursor: url.searchParams.get('cursor') || undefined });
+      // Preserve access to older client origins excluded by native list defaults.
+      if (!url.searchParams.get('cursor') && metadata.legacyThreadId && !result.data.some(row => row.id === metadata.legacyThreadId)) {
+        result.data.push((await rpc('thread/read', { threadId: metadata.legacyThreadId, includeTurns: false })).thread);
+      }
+      json(response, 200, { ...result, selected: metadata.threadId || null });
+    } else if (request.method === 'POST' && url.pathname === '/threads') {
+      idle();
+      const input = await body(request);
+      if (input.action === 'select') {
+        const result = await rpc('thread/read', { threadId: input.threadId, includeTurns: false });
+        metadata.threadId = result.thread.id; metadata.model = result.thread.model || null; metadata.effort = result.thread.reasoningEffort ?? null;
+        atomicJson(metadataFile, metadata);
+      } else if (['new', 'fork'].includes(input.action)) {
+        await nativeCall(input.action === 'new' ? 'thread/start' : 'thread/fork', {
+          ...(input.action === 'fork' ? { threadId: metadata.threadId } : {}), cwd: workspace,
+          model: metadata.model || undefined, approvalPolicy: 'on-request', sandbox: 'danger-full-access', developerInstructions,
+        });
+      } else throw new HttpError(400, 'Use new, select, or fork');
+      json(response, 200, { threadId: metadata.threadId });
+    } else if (request.method === 'GET' && url.pathname === '/requests') {
+      json(response, 200, { requests: [...serverRequests.values()] });
+    } else if (request.method === 'POST' && url.pathname === '/requests') {
+      const input = await body(request);
+      if (!serverRequests.has(input.id)) throw new HttpError(409, 'Native request is no longer pending');
+      if ((input.result === undefined) === (input.error === undefined)) throw new HttpError(400, 'Provide one native result or error');
+      send({ id: input.id, ...(input.error === undefined ? { result: input.result } : { error: input.error }) });
+      serverRequests.delete(input.id);
+      record('serverRequest/resolved', { requestId: input.id });
+      json(response, 200, { answered: true });
+    } else if (request.method === 'POST' && url.pathname === '/rpc') {
+      const input = await body(request);
+      json(response, 200, { result: await nativeCall(input.method, input.params), lastSeq: sequence });
+    } else if (request.method === 'GET' && url.pathname === '/protocol') {
+      json(response, 200, { codexVersion: '0.162.1', methods: [...nativeMethods].filter(method => method !== 'initialize' && (!method.startsWith('account/') || ['account/read', 'account/rateLimits/read'].includes(method))), experimentalApi: true });
     } else if (request.method === 'GET' && url.pathname === '/history') {
-      json(response, 200, { events, lastSeq: sequence });
+      const threadId = metadata.threadId;
+      const selectedEvents = threadEvents(threadId);
+      // Native sessions created by other clients are readable without resuming them.
+      let nativeThread = null;
+      if (threadId && !selectedEvents.some(event => ['user/message', 'thread/history', 'thread/journal', 'item/started'].includes(event.method))) {
+        const info = (await rpc('thread/read', { threadId, includeTurns: false })).thread;
+        if (info.preview) nativeThread = visibleParams((await rpc('thread/read', { threadId, includeTurns: true })).thread);
+        else nativeThread = info;
+        if (nativeThread.turns?.length) record('thread/history', { threadId, turns: nativeThread.turns });
+      }
+      json(response, 200, { events: selectedEvents, nativeThread, threadId, lastSeq: sequence });
     } else if (request.method === 'GET' && url.pathname === '/events') {
       const after = Number(url.searchParams.get('after') || request.headers['last-event-id'] || 0);
       if (!Number.isSafeInteger(after) || after < 0) throw new HttpError(400, 'Invalid event cursor');
@@ -222,6 +365,7 @@ const server = createServer(async (request, response) => {
       response.on('close', () => { clearInterval(heartbeat); listeners.delete(response); });
     } else if (request.method === 'POST' && url.pathname === '/messages') {
       const input = await body(request);
+      if (input.mode && !['default', 'plan'].includes(input.mode)) throw new HttpError(400, 'Use default or plan mode');
       if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16_000) throw new HttpError(400, 'Enter a message of at most 16000 characters');
       if (submitting || activeTurn) throw new HttpError(409, 'Wait for the current reply');
       submitting = true;
@@ -229,20 +373,24 @@ const server = createServer(async (request, response) => {
         const signedIn = await account();
         if (signedIn?.type !== 'chatgpt') throw new HttpError(401, 'Sign in with ChatGPT first');
         const threadId = await thread();
-        record('user/message', { text: input.text });
+        record('user/message', { text: input.text, threadId });
+        activeThread = threadId;
+        const startedAt = sequence;
         const result = await rpc('turn/start', { threadId, input: [{ type: 'text', text: input.text }],
-          cwd: workspace, approvalPolicy: 'never',
-          sandboxPolicy: { type: 'externalSandbox', networkAccess: 'enabled' }, summary: 'auto' });
-        if (result.turn.status === 'inProgress' && completedTurn !== result.turn.id) activeTurn = result.turn.id;
+          cwd: workspace, effort: metadata.effort ?? undefined, approvalPolicy: 'on-request',
+          sandboxPolicy: { type: 'externalSandbox', networkAccess: 'enabled' }, summary: 'auto',
+          collaborationMode: { mode: input.mode || 'default', settings: { model: metadata.model, reasoning_effort: metadata.effort ?? null, developer_instructions: null } } });
+        if (result.turn.status === 'inProgress' && (finishedThreads.get(threadId) || 0) <= startedAt) { activeTurn = result.turn.id; activeThread = threadId; }
         submitting = false;
         json(response, 202, { turnId: result.turn.id });
       } catch (error) {
-        submitting = false;
-        record('turn/rejected', { error: publicError(error) });
+        submitting = false; if (!activeTurn) activeThread = null;
+        record('turn/rejected', { threadId: metadata.threadId, error: publicError(error) });
         throw error;
       }
     } else throw new HttpError(404, 'Not found');
   } catch (error) { fail(response, error); }
 });
 server.requestTimeout = 30_000;
-server.listen(80, '0.0.0.0', () => console.log('Agent HTTP service listening on port 80'));
+server.listen(Number(process.env.AGENT_PORT || 80), '0.0.0.0');
+process.on('SIGTERM', () => { child.kill('SIGTERM'); server.close(); setTimeout(() => process.exit(0), 500).unref(); });

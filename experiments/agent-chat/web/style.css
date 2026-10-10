@@ -41,3 +41,16 @@ textarea { flex: 1; resize: vertical; min-height: 80px; border: 1px solid #cdd4d
 #send { background: #294b87; color: #fff; border-color: #294b87; }
 .privacy { margin-bottom: 0; }
 @media (max-width: 700px) { main { grid-template-columns: 1fr; padding: 0 12px; gap: 12px; margin-top: 12px; } aside { padding: 12px; } #actors { display: flex; gap: 8px; flex-wrap: wrap; } .actor { margin: 0; } aside h1, aside .hint { display: none; } header { padding: 16px; } .conversation { padding: 14px; } .toolbar { align-items: start; flex-wrap: wrap; } .account button { display: block; margin: 8px 0 0; } }
+.native-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.native-toolbar select { flex: 1; min-width: 160px; max-width: 380px; }
+#native-details { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin: 8px 0; }
+#native-details summary { cursor: pointer; }
+#rpc-form label, .request-card label { display: block; margin: 8px 0; }
+#rpc-form input, #rpc-form textarea, .request-card input, .request-card textarea { display: block; width: 100%; box-sizing: border-box; }
+#rpc-result, .request-card pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.request-card { border: 1px solid #c88c24; border-radius: 8px; padding: 12px; margin: 8px 0; background: #fffcf2; }
+.request-card button { margin-right: 8px; }
+#composer { flex-wrap: wrap; }
+
+#rpc-form, #network-form, .request-card { display: block; }
+#network-form label { display: block; margin: 8px 0; }
