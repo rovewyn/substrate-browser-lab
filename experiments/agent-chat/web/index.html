@@ -18,16 +18,21 @@
       </div>
       <div id="account" class="account" hidden><span id="account-state"></span><button id="login" hidden>Sign in with ChatGPT</button></div>
       <div id="model-settings" class="model-settings" hidden>
-        <span>Model: <strong id="model-value">Reading…</strong></span>
-        <span>Reasoning effort: <strong id="effort-value">Reading…</strong></span>
-        <span title="Suggested default from the account model catalog; separate from the conversation setting.">Catalog default: <strong id="default-effort-value">Reading…</strong></span>
+        <label>Model <select id="model-value"></select></label>
+        <label>Reasoning effort <select id="effort-value"></select></label>
+        <span title="Suggested default from the account model catalog; separate from the conversation setting.">Catalog default: <strong id="default-effort-value">Reading…</strong></span><button id="save-settings">Apply</button>
       </div>
       <form id="copy-login" hidden><select id="login-source" aria-label="Sign-in source actor"></select><button id="copy" type="submit">Reuse sign-in</button><span class="hint">Both actors must be running.</span></form>
       <div id="tool-settings" class="hint" hidden>Tools: <span id="tool-value">Reading…</span></div>
+      <div id="native-controls" hidden>
+        <div class="native-toolbar"><select id="threads" aria-label="Conversation"></select><button id="new-thread">New chat</button><button id="fork-thread">Fork</button><button id="more-threads" hidden>More</button><button id="interrupt" disabled>Interrupt turn</button></div>
+        <details id="native-details"><summary>Native Codex</summary><p id="capabilities" class="hint">Read Skills and MCP status from this actor.</p><button id="inspect-native">Read capabilities</button><button id="review">Review changes</button><form id="network-form"><label>Allowed HTTPS hosts <input id="network-hosts" placeholder="github.com, api.example.com"></label><button id="save-network">Apply hosts</button></form><form id="rpc-form"><label>Method <input id="rpc-method" list="rpc-methods" placeholder="skills/list" required></label><datalist id="rpc-methods"></datalist><label>Parameters (JSON)<textarea id="rpc-params" rows="3">{}</textarea></label><button id="rpc-send">Run native request</button></form><pre id="rpc-result"></pre><details><summary>Native events</summary><pre id="native-events"></pre></details><p class="hint">Uses the actor's Codex App Server. Experimental methods depend on version and account access.</p></details>
+      </div>
+      <div id="requests" hidden></div>
       <div id="login-details" hidden></div>
       <div id="notice" role="status"></div>
       <div id="history" aria-live="polite"></div>
-      <form id="composer"><textarea id="message" aria-label="Message" rows="3" maxlength="16000" placeholder="Resume an actor to start chatting" disabled></textarea><button id="send" disabled>Send</button></form>
+      <form id="composer"><label>Mode <select id="mode"><option value="default">Default</option><option value="plan">Plan</option></select></label><textarea id="message" aria-label="Message" rows="3" maxlength="16000" placeholder="Resume an actor to start chatting" disabled></textarea><button id="send" disabled>Send</button><button id="steer" type="button" disabled>Steer active turn</button></form>
       <p class="privacy">Conversation content lives in the actor. This page keeps only its current display.</p>
     </section>
   </main>
