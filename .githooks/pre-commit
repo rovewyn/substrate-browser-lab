@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "Commit blocked: Gitleaks is required. Install it and retry." >&2
+  echo "On macOS: brew install gitleaks" >&2
+  exit 1
+fi
+
+exec gitleaks git --pre-commit --staged --redact --no-banner
