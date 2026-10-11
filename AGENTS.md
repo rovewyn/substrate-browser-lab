@@ -43,9 +43,9 @@ Describe code changes, link relevant issues, and provide experiment commands. De
 
 ## Security & Configuration
 
-Never include absolute paths to the local machine's filesystem in committed content. Use repository-relative paths, environment variables, or generic placeholders instead.
+Never include machine-specific absolute filesystem paths from a real local environment in committed content. Use repository-relative paths, environment variables, or generic placeholders instead. Standard platform paths required by code or tooling, including system library paths and interpreter shebangs, and clearly synthetic paths used in tests or examples are allowed.
 
-Never reveal the current operating system user's name or username in committed content, generated artifacts, logs, or user-facing output. Redact it or use a generic placeholder instead.
+Never include the current local operating system user's real name or username in committed content. Redact it or use a generic placeholder instead. This rule applies to all files included in a commit, including source files, documentation, configuration examples, fixtures, and retained generated assets.
 
 Never commit credentials, tokens, cookies, private browser profiles, or personal data. Use synthetic data and placeholders such as `<REDACTED>` or `example.com`. Redact sensitive data in logs, traces, screenshots, URLs, reports, and PR content before committing, sharing, or publishing. Document environment variable names without values.
 
