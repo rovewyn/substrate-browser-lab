@@ -26,7 +26,7 @@ Validate through direct experiment runs and manual output inspection. Record par
 
 ## Git Workflow & Cleanup
 
-Use `codex/` feature branches during development. After merging a PR, cleanup must remove both its local and remote feature branches:
+Use feature branches during development. After merging a PR, cleanup must remove both its local and remote feature branches:
 
 1. Confirm neither branch contains new or unmerged work; delete the remote feature branch.
 2. Run `git fetch --prune origin`.
