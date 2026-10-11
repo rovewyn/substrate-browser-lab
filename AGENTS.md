@@ -43,6 +43,10 @@ Describe code changes, link relevant issues, and provide experiment commands. De
 
 ## Security & Configuration
 
+Never include absolute paths to the local machine's filesystem in committed content. Use repository-relative paths, environment variables, or generic placeholders instead.
+
+Never reveal the current operating system user's name or username in committed content, generated artifacts, logs, or user-facing output. Redact it or use a generic placeholder instead.
+
 Never commit credentials, tokens, cookies, private browser profiles, or personal data. Use synthetic data and placeholders such as `<REDACTED>` or `example.com`. Redact sensitive data in logs, traces, screenshots, URLs, reports, and PR content before committing, sharing, or publishing. Document environment variable names without values.
 
 The pre-commit hook must pass `gitleaks git --pre-commit --staged --redact` with no findings. Missing tools or scan errors block commits. Never use `--no-verify`. Restage and rescan after changes.
