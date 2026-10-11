@@ -1,0 +1,7 @@
+{
+  "metadata": { "atespace": "ate-demo-browser", "name": "default" },
+  "rules": [
+    { "http": { "hostnames": ["example.com"], "ports": { "numbers": [80] } } },
+    { "tlsPassthrough": { "hostnames": ["example.com"], "ports": { "numbers": [443] } } }
+  ]
+}

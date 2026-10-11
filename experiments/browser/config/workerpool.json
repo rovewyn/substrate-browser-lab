@@ -1,0 +1,49 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "ate-demo-browser",
+        "labels": {
+          "local.substrate-play.owner": "substrate-play"
+        }
+      }
+    },
+    {
+      "apiVersion": "ate.dev/v1alpha1",
+      "kind": "WorkerPool",
+      "metadata": {
+        "name": "browser-workerpool",
+        "namespace": "ate-demo-browser",
+        "labels": {
+          "workload": "browser",
+          "local.substrate-play.owner": "substrate-play"
+        }
+      },
+      "spec": {
+        "replicas": 2,
+        "workerImage": "localhost:5001/ateom-gvisor@sha256:ed6fb6133977fdf26be30c4698ed96fd2f5db8e9e8379789632a21feb890457c",
+        "sandboxClasses": [
+          {
+            "name": "gvisor"
+          }
+        ],
+        "template": {
+          "resources": {
+            "limits": {
+              "cpu": "2",
+              "memory": "4Gi"
+            },
+            "requests": {
+              "cpu": "500m",
+              "memory": "4Gi"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
