@@ -1,0 +1,9 @@
+{
+  "name": "substrate-agent-chat",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@openai/codex": "0.162.1"
+  }
+}
